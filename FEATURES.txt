@@ -1,0 +1,51 @@
+YouTube AI Assistant - Features
+
+1. Chrome extension popup UI
+- Provides a small popup with a question field, Ask button, and answer area.
+- Prompts the user to ask about the currently open YouTube video.
+
+2. Current video detection
+- Reads the active browser tab.
+- Supports extracting video IDs from:
+  - youtube.com/watch?v=...
+  - youtu.be/...
+  - youtube.com/shorts/...
+
+3. YouTube-only workflow
+- Prevents requests unless the active tab is a YouTube video page.
+- Shows clear messages when the user is on the wrong page or when the video ID cannot be found.
+
+4. Local backend API
+- Runs a FastAPI server on localhost:8000.
+- Exposes a POST /ask endpoint for question answering.
+- Exposes GET /health and GET / for basic status checks.
+
+5. Transcript retrieval
+- Fetches video transcripts using youtube-transcript-api.
+- Falls back to yt-dlp and caption URL parsing when the primary transcript lookup fails.
+- Supports multiple transcript language options, including English and Hindi.
+
+6. Transcript and metadata caching
+- Caches transcripts in memory to avoid repeated fetches.
+- Caches video title and description in memory as well.
+
+7. Context building for answers
+- Combines video title, description, and transcript into a single source text.
+- Uses embedding-based retrieval with FAISS when an OpenRouter key is available.
+- Falls back to keyword-based sentence matching when embeddings are unavailable.
+
+8. AI answer generation
+- Sends the retrieved context and question to an LLM through OpenRouter.
+- Tries multiple free models in a fallback order until one works.
+- Restricts answers to the provided context and returns a fixed fallback phrase when the answer is not present.
+
+9. Extension-to-backend communication
+- The popup sends the selected video ID and question to the local backend with fetch.
+- Displays loading, success, and error states in the popup.
+
+10. Cross-origin support
+- Enables CORS so the Chrome extension can talk to the local FastAPI server.
+
+11. Runtime configuration
+- Uses environment variables from .env for OpenRouter access.
+- Includes the Python dependencies needed to run the backend.
