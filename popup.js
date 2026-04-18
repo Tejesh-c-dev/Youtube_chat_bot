@@ -4,7 +4,10 @@ const state = {
     messages: [],
     isLoading: false,
     backendOnline: false,
+    backendBaseUrl: "http://localhost:8000",
 };
+
+const BACKEND_CANDIDATES = ["http://localhost:8000", "http://localhost:8001"];
 
 const questionInput = document.getElementById("question-input");
 const sendBtn = document.getElementById("send-btn");
@@ -19,6 +22,40 @@ const emptyStateEl = document.getElementById("empty-state");
 const charCounterEl = document.getElementById("char-counter");
 
 const suggestionChips = Array.from(chipsEl.querySelectorAll("button[data-chip]"));
+
+function decodeHTML(text) {
+    const txt = document.createElement("textarea");
+    txt.innerHTML = String(text ?? "");
+    return txt.value;
+}
+
+function escapeHTML(text) {
+    return String(text ?? "")
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;");
+}
+
+function processAIResponse(text) {
+    const decoded = decodeHTML(text);
+    const escaped = escapeHTML(decoded);
+    let processed = escaped.replace(/\*\*(.*?)\*\*/g, "<strong>$1</strong>");
+    processed = processed.replace(/\*(.*?)\*/g, "<em>$1</em>");
+    processed = processed.replace(/(^|<br>)(\d+\.\s)/g, "$1<span class=\"list-num\">$2</span>");
+    processed = processed.replace(/\n/g, "<br>");
+    processed = processed.replace(/^(<br>)+/, "");
+    return processed;
+}
+
+function buildConversationHistory(messages) {
+    const recent = messages.slice(-8);
+    return recent
+        .filter((message) => message.role === "user" || message.role === "ai")
+        .map((message) => ({
+            role: message.role === "user" ? "user" : "assistant",
+            content: message.text,
+        }));
+}
 
 function getVideoId(urlString) {
     try {
@@ -108,7 +145,11 @@ function renderMessages() {
     for (const message of state.messages) {
         const bubble = document.createElement("div");
         bubble.className = `message ${message.role}${message.isError ? " error" : ""}`;
-        bubble.textContent = message.text;
+        if (message.role === "ai" && !message.isError) {
+            bubble.innerHTML = processAIResponse(message.text);
+        } else {
+            bubble.textContent = message.text;
+        }
 
         const meta = document.createElement("span");
         meta.className = "meta";
@@ -144,9 +185,10 @@ function renderTypingIndicator() {
 }
 
 function addMessage(role, text, options = {}) {
+    const normalizedText = decodeHTML(text);
     state.messages.push({
         role,
-        text,
+        text: normalizedText,
         time: formatTime(),
         isError: Boolean(options.isError),
     });
@@ -163,24 +205,30 @@ function resetChat() {
 }
 
 async function healthCheck() {
-    try {
-        const controller = new AbortController();
-        const timeoutId = window.setTimeout(() => controller.abort(), 5000);
-        const response = await fetch("http://localhost:8000/health", { signal: controller.signal });
-        window.clearTimeout(timeoutId);
+    for (const baseUrl of BACKEND_CANDIDATES) {
+        try {
+            const controller = new AbortController();
+            const timeoutId = window.setTimeout(() => controller.abort(), 5000);
+            const response = await fetch(`${baseUrl}/health`, { signal: controller.signal });
+            window.clearTimeout(timeoutId);
 
-        if (!response.ok) {
-            throw new Error(`HTTP ${response.status}`);
-        }
+            if (!response.ok) {
+                throw new Error(`HTTP ${response.status}`);
+            }
 
-        updateStatus(true, "Backend online");
-        if (bannerEl.classList.contains("warning")) {
-            clearBanner();
+            state.backendBaseUrl = baseUrl;
+            updateStatus(true, `Backend online (${baseUrl.replace("http://", "")})`);
+            if (bannerEl.classList.contains("warning")) {
+                clearBanner();
+            }
+            return;
+        } catch {
+            continue;
         }
-    } catch {
-        updateStatus(false, "Backend offline");
-        setBanner("Backend offline — run `uvicorn main:app` in /backend", "warning");
     }
+
+    updateStatus(false, "Backend offline");
+    setBanner("Backend offline - run uvicorn main:app in /backend", "warning");
 }
 
 async function detectActiveVideo() {
@@ -236,12 +284,17 @@ async function sendQuestion(questionText) {
 
     const controller = new AbortController();
     const timeoutId = window.setTimeout(() => controller.abort(), 30000);
+    const conversationHistory = buildConversationHistory(state.messages.slice(0, -1));
 
     try {
-        const response = await fetch("http://localhost:8000/ask", {
+        const response = await fetch(`${state.backendBaseUrl}/ask`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ video_id: state.videoId, question: trimmedQuestion }),
+            body: JSON.stringify({
+                video_id: state.videoId,
+                question: trimmedQuestion,
+                conversation_history: conversationHistory,
+            }),
             signal: controller.signal,
         });
 
@@ -268,7 +321,7 @@ async function sendQuestion(questionText) {
         if (controller.signal.aborted) {
             addMessage("ai", "Request timed out.", { isError: true });
         } else if (message.includes("Failed to fetch") || message.includes("NetworkError")) {
-            addMessage("ai", "Cannot reach the backend at localhost:8000.", { isError: true });
+            addMessage("ai", `Cannot reach the backend at ${state.backendBaseUrl.replace("http://", "")}.`, { isError: true });
         } else {
             addMessage("ai", message, { isError: true });
         }

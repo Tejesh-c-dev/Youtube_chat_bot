@@ -13,6 +13,63 @@ import yt_dlp
 LANGUAGES = ["en", "en-US", "hi", "a.en"]
 
 
+def _compute_duration_hint(transcript_text: str) -> str:
+    word_count = len((transcript_text or "").split())
+    if word_count < 800:
+        return "short"
+    if word_count < 3000:
+        return "medium"
+    return "long"
+
+
+def _format_timestamp(seconds: float) -> str:
+    total = max(0, int(seconds))
+    hours, rem = divmod(total, 3600)
+    minutes, secs = divmod(rem, 60)
+    if hours > 0:
+        return f"{hours:02d}:{minutes:02d}:{secs:02d}"
+    return f"{minutes:02d}:{secs:02d}"
+
+
+def _build_segments(transcript_items: list[dict], target_chars: int = 140) -> list[dict[str, str]]:
+    """Group raw transcript items into readable timestamped segments."""
+    segments: list[dict[str, str]] = []
+    buffer: list[str] = []
+    start_time: float | None = None
+    char_count = 0
+
+    for item in transcript_items:
+        text = re.sub(r"\s+", " ", str(item.get("text", ""))).strip()
+        if not text:
+            continue
+        if start_time is None:
+            start_time = float(item.get("start", 0.0) or 0.0)
+
+        buffer.append(text)
+        char_count += len(text)
+
+        if char_count >= target_chars:
+            merged = " ".join(buffer).strip()
+            if merged:
+                segments.append({
+                    "time": _format_timestamp(start_time or 0.0),
+                    "text": merged,
+                })
+            buffer = []
+            start_time = None
+            char_count = 0
+
+    if buffer:
+        merged = " ".join(buffer).strip()
+        if merged:
+            segments.append({
+                "time": _format_timestamp(start_time or 0.0),
+                "text": merged,
+            })
+
+    return segments
+
+
 def _extract_metadata(info: dict, video_id: str) -> tuple[str, str]:
     title = (info.get("title") or f"Video {video_id}").strip()
     description = (info.get("description") or "").strip()
@@ -107,15 +164,17 @@ async def _get_transcript_from_youtube_transcript_api(video_id: str) -> str:
         video_id,
         LANGUAGES,
     )
-    return " ".join(item.get("text", "") for item in transcript_list).strip()
+    text = " ".join(item.get("text", "") for item in transcript_list).strip()
+    segments = _build_segments(transcript_list)
+    return text, segments
 
 
 async def get_transcript(video_id: str) -> dict:
-    """Returns { 'text': str, 'title': str, 'description': str }"""
+    """Returns transcript plus metadata and duration hint."""
     video_url = f"https://www.youtube.com/watch?v={video_id}"
 
     try:
-        text = await _get_transcript_from_youtube_transcript_api(video_id)
+        text, segments = await _get_transcript_from_youtube_transcript_api(video_id)
         if text:
             print(f"Transcript fetched with youtube-transcript-api for {video_id}")
             try:
@@ -124,7 +183,13 @@ async def get_transcript(video_id: str) -> dict:
             except Exception as exc:
                 print(f"Metadata fetch failed after transcript API success for {video_id}: {exc}")
                 title, description = f"Video {video_id}", ""
-            return {"text": text, "title": title, "description": description}
+            return {
+                "text": text,
+                "title": title,
+                "description": description[:600],
+                "duration_hint": _compute_duration_hint(text),
+                "segments": segments,
+            }
     except Exception as exc:
         print(f"youtube-transcript-api failed for {video_id}: {exc}")
 
@@ -139,7 +204,14 @@ async def get_transcript(video_id: str) -> dict:
         text = _parse_caption_payload(payload)
         if text:
             print(f"Transcript fetched with yt-dlp fallback for {video_id}")
-            return {"text": text, "title": title, "description": description}
+            # yt-dlp fallback may not provide reliable timestamps in this parser.
+            return {
+                "text": text,
+                "title": title,
+                "description": description[:600],
+                "duration_hint": _compute_duration_hint(text),
+                "segments": [],
+            }
 
         raise RuntimeError("Caption payload was empty")
     except Exception as exc:
